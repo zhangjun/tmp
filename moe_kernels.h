@@ -19,10 +19,10 @@
 #include "cutlass/gemm/gemm.h"
 #include "tensorrt_llm/common/assert.h"
 #include "tensorrt_llm/common/quantization.h"
-#include "tensorrt_llm/common/cudaUtils.h"
 #include "tensorrt_llm/kernels/cutlass_kernels/moe_gemm/moe_gemm_kernels.h"
-#include <cuda_runtime_api.h>
+#include "tensorrt_llm/common/cudaUtils.h"
 #include <NvInferRuntime.h>
+#include <cuda_runtime_api.h>
 #include <optional>
 #include <random>
 
@@ -184,6 +184,7 @@ public:
         MOEParallelismConfig parallelism_config, MOEExpertScaleNormalizationMode normalization_mode,
         cudaStream_t stream) = 0;
 
+    // Aliases for profiling the gemms
     virtual void gemm1(void const* const input, void* const output, void* const intermediate_result,
         int64_t const* const expert_first_token_offset, HopperGroupedGemmInput hopper_input_template,
         void const* const fc1_expert_weights, void const* const fc1_expert_biases,
@@ -192,6 +193,7 @@ public:
         int64_t const inter_size, int const num_experts_per_node, ActivationType fc1_activation_type,
         float const** alpha_scale_ptr_array, bool bias_is_broadcast, cudaStream_t stream,
         cutlass_extensions::CutlassGemmConfig config) = 0;
+
 
     virtual void gemm2(void const* const input, void* const gemm_output, void* const final_output,
         int64_t const* const expert_first_token_offset, HopperGroupedGemmInput const hopper_input_template,
@@ -210,6 +212,9 @@ public:
     bool use_deterministic_hopper_reduce_ = false;
 };
 
+// Assumes inputs activations are row major. Weights need to be preprocessed by th_op/weight_quantize.cc .
+// Nested in a class to avoid multiple calls to cudaGetDeviceProperties as this call can be expensive.
+// Avoid making several duplicates of this class.
 template <typename T,                    /*The type used for activations*/
     typename WeightType,                 /* The type for the MoE weights */
     typename OutputType = T,             /* The type for the MoE final output */
@@ -224,9 +229,12 @@ class CutlassMoeFCRunner : public CutlassMoeFCRunnerInterface
     static constexpr bool use_fp8 = false;
 #endif
 
+    // This should leave the variable unchanged in any currently supported configuration
     using UnfusedGemmOutputType = typename HopperGroupedGemmInput::OutputTypeAdaptor_t<OutputType>;
 
     static_assert(!std::is_same_v<OutputType, __nv_fp8_e4m3>, "Current logic requires output type to be non-FP8");
+    // We introduce this as a separate parameter, so that if we ever remove the above condition we can decouple
+    // ScaleBiasType and OutputType easily. For now these are required to be equivalent
     static_assert(std::is_same_v<OutputType, ScaleBiasType>, "Scale and bias types must match OutputType");
 
 public:
@@ -268,6 +276,7 @@ public:
         MOEParallelismConfig parallelism_config, MOEExpertScaleNormalizationMode normalization_mode,
         cudaStream_t stream) override;
 
+    // We make these GEMM1 & GEMM2 static because they need to be stateless for the profiler to work
     static void gemm1(MoeGemmRunner<T, WeightType, OutputType, ScaleBiasType>& gemm_runner, T const* const input,
         T* const output, void* const intermediate_result, int64_t const* const expert_first_token_offset,
         HopperGroupedGemmInput const hopper_input_template, WeightType const* const fc1_expert_weights,
@@ -289,6 +298,7 @@ public:
         bool using_hopper_fused_finalize, float const** alpha_scale_ptr_array,
         cudaStream_t stream, MOEParallelismConfig parallelism_config, cutlass_extensions::CutlassGemmConfig config);
 
+    // Overrides to allow us to forward on to the internal functions with the pointers using the correct type
     void gemm1(void const* const input, void* const output, void* const intermediate_result,
         int64_t const* const expert_first_token_offset, HopperGroupedGemmInput hopper_input_template,
         void const* const fc1_expert_weights, void const* const fc1_expert_biases,
@@ -347,6 +357,7 @@ private:
 private:
     bool mayHaveDifferentGEMMOutputType() const
     {
+        // We just check if its supported because we need to know when calculating workspace size
         return (
             (moe_gemm_runner_.supportsHopperSpecialisation() && !std::is_same_v<T, UnfusedGemmOutputType>) || use_fp8);
     }
