@@ -1569,7 +1569,7 @@ void CutlassMoeFCRunner<T, WeightType, OutputType, ScaleBiasType, Enable>::gemm1
     {
         TLLM_CHECK(!use_ampere_activation_fusion);
         TLLM_CHECK(!config.is_sm90);
-        gemm_runner.moeGemmBiasAct(input, fc1_expert_weights, nullptr, nullptr, false,
+        gemm_runner.moeGemmBiasAct(input, fc1_expert_weights, fc1_int_scales, fc1_expert_biases, bias_is_broadcast,
             output, total_tokens_including_expert, HopperGroupedGemmInput{}, expanded_num_rows, fc1_out_size,
             hidden_size, num_experts_per_node, fc1_activation_type, false, nullptr, stream, config);
     }
